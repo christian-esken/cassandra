@@ -126,7 +126,9 @@ public class OutboundTcpConnection extends Thread
     static final int LZ4_HASH_SEED = 0x9747b28c;
 
     private final BlockingQueue<QueuedMessage> backlog = new LinkedBlockingQueue<>();
-    private final QueueExpiration messageExpiration;
+    private final int backlogExpireAt = 1024;
+	private final AtomicBoolean backlogExpirationRunning = new AtomicBoolean(false);
+	private static final boolean backlogExpirationDebug = true;
 
     private final OutboundTcpConnectionPool poolReference;
 
@@ -142,7 +144,6 @@ public class OutboundTcpConnection extends Thread
     {
         super("MessagingService-Outgoing-" + pool.endPoint());
         this.poolReference = pool;
-        messageExpiration = new QueueExpiration(1024, Integer.MAX_VALUE);
         cs = newCoalescingStrategy(pool.endPoint().getHostAddress());
 
         // We want to use the most precise version we know because while there is version detection on connect(),
@@ -166,7 +167,7 @@ public class OutboundTcpConnection extends Thread
     {
         try
         {
-        	boolean hasCapacity = messageExpiration.ensureFreeCapacity(false);
+        	expireMessagesConditionally();
             backlog.put(new QueuedMessage(message, id));
         }
         catch (InterruptedException e)
@@ -544,6 +545,36 @@ public class OutboundTcpConnection extends Thread
         return version.get();
     }
 
+    /**
+     * Expire elements from the queue if the queue is pretty full and expiration is not already in progress.
+     * 
+     * @return true, if space is available
+     */
+    private void expireMessagesConditionally()
+    {
+    	if (backlog.size() < backlogExpireAt)
+    		return; // Plenty of space
+
+    	if (backlogExpirationRunning.get())
+			return; // Fast-path if expiration is currently in progress. No locks/CAS in this code path.
+    	
+    	if (backlogExpirationRunning.compareAndSet(false, true))
+    	{
+    		try
+    		{
+    			if (backlogExpirationDebug)
+    				logger.info("CASSANDRA-13265 Expiration of {} started by {}", getName(), Thread.currentThread().getName() );
+    			expireMessages();
+    		}
+    		finally
+    		{
+    			backlogExpirationRunning.set(false);
+    			if (backlogExpirationDebug)
+    				logger.info("CASSANDRA-13265 Expiration of {} ended by {}", getName(), Thread.currentThread().getName() );
+    		}
+    	}
+    }
+
     private void expireMessages()
     {
         Iterator<QueuedMessage> iter = backlog.iterator();
@@ -557,104 +588,6 @@ public class OutboundTcpConnection extends Thread
             iter.remove();
             dropped.incrementAndGet();
         }
-    }
-
-    private class QueueExpiration
-    {
-    	// Queue bounds.
-    	final int startExpireAtSize;
-    	final int maxQueueSize;
-    	
-    	final AtomicBoolean expirationRunning = new AtomicBoolean();
-//    	final Object spaceAvailableNotifier = new Object();
-
-    	public QueueExpiration(int startExpireAtSize, int maxQueueSize)
-		{
-    		this.startExpireAtSize = startExpireAtSize;
-    		this.maxQueueSize = maxQueueSize;
-		}
-    	
-		
-	    /**
-	     * Expire elements from the queue if the queue is pretty full and expiration is not already in progress.
-	     * 
-	     * @return true, if space is available
-	     */
-	    void expireMessagesConditionally()
-	    {
-	    	if (backlog.size() < startExpireAtSize)
-	    		return; // Plenty of space
-
-	    	if (expirationRunning.get())
-				return; // Fast-path if expiration is currently in progress. No locks/CAS in this code path.
-	    	
-	    	if (expirationRunning.compareAndSet(false, true))
-	    	{
-	    		try
-	    		{
-	    			expireMessages();
-//	    			synchronized (spaceAvailableNotifier)
-//					{
-//		    			spaceAvailableNotifier.notifyAll();						
-//					}
-	    		}
-	    		finally
-	    		{
-	    			expirationRunning.set(false);
-	    		}
-	    	}
-	    }
-
-	    /**
-	     * Triggers queue expiration if it makes sense. It makes sense if the queue is pretty full
-	     * and if it is not already running. If #ensureSpace is true, this method will wait until
-	     * space is available in the Queue. 
-	     * 
-	     * @param ensureSpace controls, whether to wait for space or not TODO Should this be supported?
-	     * @return true, if space is available
-	     */
-		protected boolean ensureFreeCapacity(boolean ensureSpace)
-		{
-	    	expireMessagesConditionally();
-	    	return spaceAvailable();
-	    	// TODO Should the ensureSpace parameter be supported (see code below)? Or should the caller handle (or ignore) it.
-		}
-		
-//	    	boolean spaceAvailable = spaceAvailable();
-//
-//	    	if (ensureSpace && !spaceAvailable)
-//	    	{
-//	    		while (!spaceAvailable())
-//	    		{
-//	    			try
-//	    			{
-//		            	synchronized (spaceAvailableNotifier)
-//						{
-//		            		spaceAvailableNotifier.wait();
-//						}
-//		            	triggerExpiration();
-//	    			}
-//	    			catch (InterruptedException e)
-//	    			{
-//	    				// ignore, and continue waiting
-//	    			}
-//	    		}
-//	    		
-//	    		spaceAvailable = true;
-//	    	}
-//	    	
-//	    	return spaceAvailable;
-//	    }
-
-	    /**
-	     * Returns whether there is plenty of space available in the queue (up to overfill level)
-	     * @param size
-	     * @return
-	     */
-		private boolean spaceAvailable()
-		{
-			return backlog.size() < maxQueueSize;
-		}
     }
 
     /** messages that have not been retried yet */
