@@ -128,7 +128,7 @@ public class OutboundTcpConnection extends Thread
     private final BlockingQueue<QueuedMessage> backlog = new LinkedBlockingQueue<>();
     private final int backlogExpireAt = 1024;
     private final AtomicBoolean backlogExpirationRunning = new AtomicBoolean(false);
-    private static final boolean backlogExpirationDebug = true;
+    private static final boolean BACKLOG_EXPIRATION_DEBUG = false;
 
     private final OutboundTcpConnectionPool poolReference;
 
@@ -562,7 +562,7 @@ public class OutboundTcpConnection extends Thread
         {
             try
             {
-                if (backlogExpirationDebug)
+                if (BACKLOG_EXPIRATION_DEBUG)
                     logger.info("CASSANDRA-13265 Expiration of {} started by {}", getName(),
                             Thread.currentThread().getName());
                 expireMessages();
@@ -570,7 +570,7 @@ public class OutboundTcpConnection extends Thread
             finally
             {
                 backlogExpirationRunning.set(false);
-                if (backlogExpirationDebug)
+                if (BACKLOG_EXPIRATION_DEBUG)
                     logger.info("CASSANDRA-13265 Expiration of {} ended by {}", getName(),
                             Thread.currentThread().getName());
             }
