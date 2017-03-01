@@ -31,6 +31,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.Checksum;
@@ -125,7 +126,7 @@ public class OutboundTcpConnection extends Thread
     static final int LZ4_HASH_SEED = 0x9747b28c;
 
     private final BlockingQueue<QueuedMessage> backlog = new LinkedBlockingQueue<>();
-    private final ExpirationRunnable messageExpiration;
+    private final QueueExpiration messageExpiration;
 
     private final OutboundTcpConnectionPool poolReference;
 
@@ -141,9 +142,7 @@ public class OutboundTcpConnection extends Thread
     {
         super("MessagingService-Outgoing-" + pool.endPoint());
         this.poolReference = pool;
-        // TOOD In trunk, there is a name argument. We should use name there instead of pool.toString()
-        messageExpiration = new ExpirationRunnable(pool.toString(), 1024, 10000);
-        messageExpiration.start();
+        messageExpiration = new QueueExpiration(1024, Integer.MAX_VALUE);
         cs = newCoalescingStrategy(pool.endPoint().getHostAddress());
 
         // We want to use the most precise version we know because while there is version detection on connect(),
@@ -167,7 +166,7 @@ public class OutboundTcpConnection extends Thread
     {
         try
         {
-        	messageExpiration.ensureFreeCapacity(false);
+        	boolean hasCapacity = messageExpiration.ensureFreeCapacity(false);
             backlog.put(new QueuedMessage(message, id));
         }
         catch (InterruptedException e)
@@ -180,8 +179,6 @@ public class OutboundTcpConnection extends Thread
     {
         backlog.clear();
         isStopped = destroyThread; // Exit loop to stop the thread
-        if (destroyThread)
-        	messageExpiration.shutdown();
         enqueue(CLOSE_SENTINEL, -1);
     }
 
@@ -562,97 +559,50 @@ public class OutboundTcpConnection extends Thread
         }
     }
 
-    private class ExpirationRunnable implements Runnable, Thread.UncaughtExceptionHandler
+    private class QueueExpiration
     {
-    	// Configuration
+    	// Queue bounds.
     	final int startExpireAtSize;
     	final int maxQueueSize;
     	
-    	// Status communication
-    	volatile boolean running;
-		volatile boolean expirationIsRunning = false;
-    	final BlockingQueue<Boolean> expireNotifierQ = new LinkedBlockingQueue<>(2);
-    	final Object spaceAvailableNotifier = new Object();
+    	final AtomicBoolean expirationRunning = new AtomicBoolean();
+//    	final Object spaceAvailableNotifier = new Object();
 
-    	final Thread expirationThread;
-    	
-    	public ExpirationRunnable(String name, int startExpireAtSize, int maxQueueSize)
+    	public QueueExpiration(int startExpireAtSize, int maxQueueSize)
 		{
     		this.startExpireAtSize = startExpireAtSize;
     		this.maxQueueSize = maxQueueSize;
-    		expirationThread = new Thread(this, "MessageExpiration-" + name);
-    		expirationThread.setDaemon(true);
-    		running = true;
 		}
     	
-    	public void start()
-    	{
-    		expirationThread.start();
-    	}
-    	
-		@Override
-		public void run()
-		{
-			while (running)
-			{
-				try
-				{
-					expirationIsRunning = false;
-					expireNotifierQ.take();  // wait
-					expireNotifierQ.clear();  // get rid of further notifications (if any)
-					expirationIsRunning = true;
-					expireMessages();
-
-			        /**
-			         *  After expireMessages: Notify in any case, even if we did not free any elements. Otherwise
-			         *  Threads waiting on spaceAvailableNotifier may never wake up again. Its up to those Threads
-			         *  to decide what to do if no space is available.
-			         */
-		        	synchronized (spaceAvailableNotifier)
-					{
-		        		expirationIsRunning = false;
-		            	spaceAvailableNotifier.notifyAll();						
-					}
-				}
-				catch (InterruptedException ie) {
-					// this usually comes from #shutdown(). Nothing to do then.
-				}
-				catch (Exception exc)
-				{
-					expirationIsRunning = false;
-					/**
-					 * In case of an Exception, there is no "spaceAvailableNotifier.notifyAll();".
-					 * Threads waiting on spaceAvailableNotifier may be stuck forever, or at least until the next
-					 * operation starts another expiration cycle via expireNotifierQ. This behavior is wanted, as
-					 * in presence of an Exception we cannot be sure whether elements were expired at all.
-					 */
-				}
-			}
-		}
 		
-		void shutdown()
-		{
-			running = false;
-			expirationIsRunning = false;
-			expirationThread.interrupt();
-		}
-	    
 	    /**
-	     * Triggers queue expiration if it makes sense. It makes sense if the queue is pretty full
-	     * and if it is not already running. If #ensureSpace is true, this method will wait until
-	     * space is available in the Queue. 
+	     * Expire elements from the queue if the queue is pretty full and expiration is not already in progress.
 	     * 
-	     * @param ensureSpace controls, whether to wait for space or not
 	     * @return true, if space is available
 	     */
-	    void triggerExpiration()
+	    void expireMessagesConditionally()
 	    {
-			if (!expirationIsRunning)
-			{
-				// Fast-path if the Eviction Thread already is running. No locks in this code path.
-				return;
-			}
-			expireNotifierQ.offer(Boolean.TRUE);
+	    	if (backlog.size() < startExpireAtSize)
+	    		return; // Plenty of space
+
+	    	if (expirationRunning.get())
+				return; // Fast-path if expiration is currently in progress. No locks/CAS in this code path.
+	    	
+	    	if (expirationRunning.compareAndSet(false, true))
+	    	{
+	    		try
+	    		{
+	    			expireMessages();
+//	    			synchronized (spaceAvailableNotifier)
+//					{
+//		    			spaceAvailableNotifier.notifyAll();						
+//					}
+	    		}
+	    		finally
+	    		{
+	    			expirationRunning.set(false);
+	    		}
+	    	}
 	    }
 
 	    /**
@@ -660,44 +610,41 @@ public class OutboundTcpConnection extends Thread
 	     * and if it is not already running. If #ensureSpace is true, this method will wait until
 	     * space is available in the Queue. 
 	     * 
-	     * @param ensureSpace controls, whether to wait for space or not
+	     * @param ensureSpace controls, whether to wait for space or not TODO Should this be supported?
 	     * @return true, if space is available
 	     */
 		protected boolean ensureFreeCapacity(boolean ensureSpace)
 		{
-	    	int size = backlog.size();
-	    	if (size < startExpireAtSize)
-	    	{
-	    		return true; // Plenty of space
-	    	}
-
-	    	triggerExpiration();
-	    	
-	    	boolean spaceAvailable = spaceAvailable();
-
-	    	if (ensureSpace && !spaceAvailable)
-	    	{
-	    		while (!spaceAvailable())
-	    		{
-	    			try
-	    			{
-		            	synchronized (spaceAvailableNotifier)
-						{
-		            		spaceAvailableNotifier.wait();
-						}
-		            	triggerExpiration();
-	    			}
-	    			catch (InterruptedException e)
-	    			{
-	    				// ignore, and continue waiting
-	    			}
-	    		}
-	    		
-	    		spaceAvailable = true;
-	    	}
-	    	
-	    	return spaceAvailable;
-	    }
+	    	expireMessagesConditionally();
+	    	return spaceAvailable();
+	    	// TODO Should the ensureSpace parameter be supported (see code below)? Or should the caller handle (or ignore) it.
+		}
+		
+//	    	boolean spaceAvailable = spaceAvailable();
+//
+//	    	if (ensureSpace && !spaceAvailable)
+//	    	{
+//	    		while (!spaceAvailable())
+//	    		{
+//	    			try
+//	    			{
+//		            	synchronized (spaceAvailableNotifier)
+//						{
+//		            		spaceAvailableNotifier.wait();
+//						}
+//		            	triggerExpiration();
+//	    			}
+//	    			catch (InterruptedException e)
+//	    			{
+//	    				// ignore, and continue waiting
+//	    			}
+//	    		}
+//	    		
+//	    		spaceAvailable = true;
+//	    	}
+//	    	
+//	    	return spaceAvailable;
+//	    }
 
 	    /**
 	     * Returns whether there is plenty of space available in the queue (up to overfill level)
@@ -708,20 +655,6 @@ public class OutboundTcpConnection extends Thread
 		{
 			return backlog.size() < maxQueueSize;
 		}
-
-		
-		/**
-		 * This is called, should the EvictionThread should go down on an unexpected (uncaught) Exception.
-		 */
-		@Override
-		public void uncaughtException(Thread thread, Throwable throwable)
-		{
-			logger.error("MessageExpiration Thread " + thread + " died because uncatched Exception", throwable);
-			expirationIsRunning = false;
-			// Future directions: Consider to recreate the Expiration Thread on uncaughtException
-			//evictor = null;
-		}
-
     }
 
     /** messages that have not been retried yet */
