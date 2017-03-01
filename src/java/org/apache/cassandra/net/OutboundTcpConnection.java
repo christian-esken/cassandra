@@ -547,8 +547,6 @@ public class OutboundTcpConnection extends Thread
 
     /**
      * Expire elements from the queue if the queue is pretty full and expiration is not already in progress.
-     * 
-     * @return true, if space is available
      */
     private void expireMessagesConditionally()
     {
