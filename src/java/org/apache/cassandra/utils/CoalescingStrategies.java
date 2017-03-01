@@ -98,6 +98,8 @@ public class CoalescingStrategies
         long sleep = messages * averageGap;
         if (sleep > maxCoalesceWindow)
             return false;
+        if (sleep == 0)
+        	return true; // CASSANDRA-13265
 
         // assume we receive as many messages as we expect; apply the same logic to the future batch:
         // expect twice as many messages to consider sleeping for "another" interval; this basically translates
@@ -282,7 +284,15 @@ public class CoalescingStrategies
         {
             if (sum == 0)
                 return Integer.MAX_VALUE;
-            return MEASURED_INTERVAL / sum;
+            
+            long gap = MEASURED_INTERVAL / sum;
+            if (gap == 0)
+            {
+            	// Logging is primarily here for debugging CASSANDRA-13265. For a Cassandra mainstream release, a NoSpamLogger might be more appropriate
+            	logger.warn("High message throughput. messages=" + sum + ", MEASURED_INTERVAL=" + MEASURED_INTERVAL + "ns, samples = " + Arrays.toString(samples));
+            }
+
+            return gap;
         }
 
         // this sample extends past the end of the range we cover, so rollover
