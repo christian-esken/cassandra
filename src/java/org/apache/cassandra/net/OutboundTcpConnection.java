@@ -127,8 +127,8 @@ public class OutboundTcpConnection extends Thread
 
     private final BlockingQueue<QueuedMessage> backlog = new LinkedBlockingQueue<>();
     private final int backlogExpireAt = 1024;
-	private final AtomicBoolean backlogExpirationRunning = new AtomicBoolean(false);
-	private static final boolean backlogExpirationDebug = true;
+    private final AtomicBoolean backlogExpirationRunning = new AtomicBoolean(false);
+    private static final boolean backlogExpirationDebug = true;
 
     private final OutboundTcpConnectionPool poolReference;
 
@@ -167,7 +167,7 @@ public class OutboundTcpConnection extends Thread
     {
         try
         {
-        	expireMessagesConditionally();
+            expireMessagesConditionally();
             backlog.put(new QueuedMessage(message, id));
         }
         catch (InterruptedException e)
@@ -552,27 +552,29 @@ public class OutboundTcpConnection extends Thread
      */
     private void expireMessagesConditionally()
     {
-    	if (backlog.size() < backlogExpireAt)
-    		return; // Plenty of space
+        if (backlog.size() < backlogExpireAt)
+            return; // Plenty of space
 
-    	if (backlogExpirationRunning.get())
-			return; // Fast-path if expiration is currently in progress. No locks/CAS in this code path.
-    	
-    	if (backlogExpirationRunning.compareAndSet(false, true))
-    	{
-    		try
-    		{
-    			if (backlogExpirationDebug)
-    				logger.info("CASSANDRA-13265 Expiration of {} started by {}", getName(), Thread.currentThread().getName() );
-    			expireMessages();
-    		}
-    		finally
-    		{
-    			backlogExpirationRunning.set(false);
-    			if (backlogExpirationDebug)
-    				logger.info("CASSANDRA-13265 Expiration of {} ended by {}", getName(), Thread.currentThread().getName() );
-    		}
-    	}
+        if (backlogExpirationRunning.get())
+            return; // Fast-path if expiration is currently in progress. No locks/CAS in this code path.
+
+        if (backlogExpirationRunning.compareAndSet(false, true))
+        {
+            try
+            {
+                if (backlogExpirationDebug)
+                    logger.info("CASSANDRA-13265 Expiration of {} started by {}", getName(),
+                            Thread.currentThread().getName());
+                expireMessages();
+            }
+            finally
+            {
+                backlogExpirationRunning.set(false);
+                if (backlogExpirationDebug)
+                    logger.info("CASSANDRA-13265 Expiration of {} ended by {}", getName(),
+                            Thread.currentThread().getName());
+            }
+        }
     }
 
     private void expireMessages()
