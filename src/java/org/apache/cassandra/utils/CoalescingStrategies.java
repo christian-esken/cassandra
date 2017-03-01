@@ -345,10 +345,15 @@ public class CoalescingStrategies
             for (Coalescable qm : out)
                 logSample(qm.timestampNanos());
 
+            int count = out.size();
+//            if (count == maxItems)
+//            {
+//            	return; // CASSANDRA-13265 TODO consider to return immediately if out is already full. 
+//            }
+
             long averageGap = averageGap();
             debugGap(averageGap);
 
-            int count = out.size();
             if (maybeSleep(count, averageGap, maxCoalesceWindow, parker))
             {
                 input.drainTo(out, maxItems - out.size());
