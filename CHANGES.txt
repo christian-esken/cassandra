@@ -1,4 +1,5 @@
 2.2.10
+ * Expire OutboundTcpConnection messages by a single Thread (CASSANDRA-13265)
  * Fix weightedSize() for row-cache reported by JMX and NodeTool (CASSANDRA-13393)
  * Fix JVM metric paths (CASSANDRA-13103)
  * Honor truststore-password parameter in cassandra-stress (CASSANDRA-12773)
