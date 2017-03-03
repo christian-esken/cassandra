@@ -168,10 +168,11 @@ public class OutboundTcpConnection extends FastThreadLocalThread
 
     public void enqueue(MessageOut<?> message, int id)
     {
-        expireMessages();
+        long nanoTime = System.nanoTime();
+        expireMessages(nanoTime);
         try
         {
-            backlog.put(new QueuedMessage(message, id));
+            backlog.put(new QueuedMessage(message, id, nanoTime));
         }
         catch (InterruptedException e)
         {
@@ -565,22 +566,23 @@ public class OutboundTcpConnection extends FastThreadLocalThread
     /**
      * Expire elements from the queue if the queue is pretty full and expiration is not already in progress.
      * This method will only remove droppable expired entries. If no such element exists, nothing is removed from the queue.
+     * 
+     * @param timestampNanos The current time as from System.nanoTime()
      */
-    private void expireMessages()
+    private void expireMessages(long timestampNanos)
     {
         if (backlog.size() <= BACKLOG_PURGE_SIZE)
             return; // Plenty of space
 
         long nextExpirationTime = backlogNextExpirationTime.get();
-        long now = System.nanoTime();
-        if (nextExpirationTime - now > 0)
+        if (nextExpirationTime - timestampNanos > 0)
             return; // Expiration is not due.
 
         /**
          * Expiration is an expensive process. Iterating the queue locks the queue for both writes and
          * reads during iter.next() and iter.remove(). Thus let only a single Thread do expiration.
          */
-        if (backlogNextExpirationTime.compareAndSet(nextExpirationTime, now + BACKLOG_EXPIRATION_INTERVAL_NANOS))
+        if (backlogNextExpirationTime.compareAndSet(nextExpirationTime, timestampNanos + BACKLOG_EXPIRATION_INTERVAL_NANOS))
         {
             Iterator<QueuedMessage> iter = backlog.iterator();
             while (iter.hasNext())
@@ -596,7 +598,7 @@ public class OutboundTcpConnection extends FastThreadLocalThread
             
             if (logger.isTraceEnabled())
             {
-                long duration = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - now);
+                long duration = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - timestampNanos);
                 logger.trace("Expiration of {} took {}μs", getName(), duration);
             }
 
@@ -611,11 +613,11 @@ public class OutboundTcpConnection extends FastThreadLocalThread
         final long timestampNanos;
         final boolean droppable;
 
-        QueuedMessage(MessageOut<?> message, int id)
+        QueuedMessage(MessageOut<?> message, int id, long timestampNanos)
         {
             this.message = message;
             this.id = id;
-            this.timestampNanos = System.nanoTime();
+            this.timestampNanos = timestampNanos;
             this.droppable = MessagingService.DROPPABLE_VERBS.contains(message.verb);
         }
 
@@ -641,7 +643,7 @@ public class OutboundTcpConnection extends FastThreadLocalThread
     {
         RetriedQueuedMessage(QueuedMessage msg)
         {
-            super(msg.message, msg.id);
+            super(msg.message, msg.id, msg.timestampNanos);
         }
 
         boolean shouldRetry()
