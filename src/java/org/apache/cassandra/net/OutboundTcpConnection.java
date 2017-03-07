@@ -260,6 +260,9 @@ public class OutboundTcpConnection extends FastThreadLocalThread
                     {
                         // clear out the queue, else gossip messages back up.
                         drainedMessages.clear();
+                        // Clear the backlog and update dropped statistics. Hint: The statistics may be slightly
+                        // too low, if messages are added between the calls of backlog.size() and backlog.clear()
+                        dropped.addAndGet(backlog.size());
                         backlog.clear();
                         break inner;
                     }
