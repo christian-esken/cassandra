@@ -63,6 +63,7 @@ import org.xerial.snappy.SnappyOutputStream;
 import org.apache.cassandra.config.Config;
 import org.apache.cassandra.config.DatabaseDescriptor;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.Uninterruptibles;
 
 public class OutboundTcpConnection extends FastThreadLocalThread
@@ -129,7 +130,8 @@ public class OutboundTcpConnection extends FastThreadLocalThread
     static final int LZ4_HASH_SEED = 0x9747b28c;
 
     private final BlockingQueue<QueuedMessage> backlog = new LinkedBlockingQueue<>();
-    private static final int BACKLOG_PURGE_SIZE = 1024;
+    @VisibleForTesting
+    static final int BACKLOG_PURGE_SIZE = 1024;
     private static final long BACKLOG_EXPIRATION_INTERVAL_NANOS = 10 * 1000 * 1000 * 1000; // 10s
     private final AtomicLong backlogNextExpirationTime = new AtomicLong(System.nanoTime());
 
@@ -178,6 +180,18 @@ public class OutboundTcpConnection extends FastThreadLocalThread
         {
             throw new AssertionError(e);
         }
+    }
+
+    @VisibleForTesting // (otherwise = VisibleForTesting.NONE)
+    /**
+     * This is a helper method for unit testing. Disclaimer: Do not use this method outside unit tests, as
+     * this method is iterating the queue which can be an expensive operation (CPU time, queue locking).
+     * 
+     * @return true, if the queue contains at least one expired element
+     */
+    boolean backlogContainsExpiredMessages(long nowNanos)
+    {
+        return backlog.stream().anyMatch(entry -> entry.isTimedOut(nowNanos));
     }
 
     void closeSocket(boolean destroyThread)
@@ -238,7 +252,7 @@ public class OutboundTcpConnection extends FastThreadLocalThread
                         continue;
                     }
 
-                    if (qm.isTimedOut())
+                    if (qm.isTimedOut(System.nanoTime()))
                         dropped.incrementAndGet();
                     else if (socket != null || connect())
                         writeConnected(qm, count == 1 && backlog.isEmpty());
@@ -569,7 +583,8 @@ public class OutboundTcpConnection extends FastThreadLocalThread
      * 
      * @param timestampNanos The current time as from System.nanoTime()
      */
-    private void expireMessages(long timestampNanos)
+    @VisibleForTesting
+    void expireMessages(long timestampNanos)
     {
         if (backlog.size() <= BACKLOG_PURGE_SIZE)
             return; // Plenty of space
@@ -590,7 +605,7 @@ public class OutboundTcpConnection extends FastThreadLocalThread
                 QueuedMessage qm = iter.next();
                 if (!qm.droppable)
                     continue;
-                if (!qm.isTimedOut())
+                if (!qm.isTimedOut(timestampNanos))
                     continue;
                 iter.remove();
                 dropped.incrementAndGet();
@@ -622,9 +637,10 @@ public class OutboundTcpConnection extends FastThreadLocalThread
         }
 
         /** don't drop a non-droppable message just because it's timestamp is expired */
-        boolean isTimedOut()
+        boolean isTimedOut(long nowNanos)
         {
-            return droppable && timestampNanos < System.nanoTime() - TimeUnit.MILLISECONDS.toNanos(message.getTimeout());
+            long messageTimeoutNanos = TimeUnit.MILLISECONDS.toNanos(message.getTimeout());
+            return droppable && timestampNanos - (nowNanos - messageTimeoutNanos) < 0;
         }
 
         boolean shouldRetry()
