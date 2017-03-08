@@ -259,10 +259,11 @@ public class OutboundTcpConnection extends FastThreadLocalThread
                     else
                     {
                         // clear out the queue, else gossip messages back up.
+                        int drainCount = drainedMessages.size();
                         drainedMessages.clear();
                         // Clear the backlog and update dropped statistics. Hint: The statistics may be slightly
                         // too low, if messages are added between the calls of backlog.size() and backlog.clear()
-                        dropped.addAndGet(backlog.size());
+                        dropped.addAndGet(backlog.size() + drainCount);
                         backlog.clear();
                         break inner;
                     }
@@ -598,7 +599,7 @@ public class OutboundTcpConnection extends FastThreadLocalThread
 
         /**
          * Expiration is an expensive process. Iterating the queue locks the queue for both writes and
-         * reads during iter.next() and iter.remove(). Thus let only a single Thread do expiration.
+         * reads during iter.next() and iter.remove(). Thus letting only a single Thread do expiration.
          */
         if (backlogNextExpirationTime.compareAndSet(nextExpirationTime, timestampNanos + BACKLOG_EXPIRATION_INTERVAL_NANOS))
         {
@@ -619,7 +620,6 @@ public class OutboundTcpConnection extends FastThreadLocalThread
                 long duration = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - timestampNanos);
                 logger.trace("Expiration of {} took {}μs", getName(), duration);
             }
-
         }
     }
 
