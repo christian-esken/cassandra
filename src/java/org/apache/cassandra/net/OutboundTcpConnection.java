@@ -31,6 +31,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.Checksum;
@@ -118,6 +119,10 @@ public class OutboundTcpConnection extends FastThreadLocalThread
         if (coalescingWindow < 0)
             throw new ExceptionInInitializerError(
                     "Value provided for coalescing window must be greater than 0: " + coalescingWindow);
+
+        int otc_backlog_expiration_interval_in_ms = DatabaseDescriptor.getOtcBacklogExpirationInterval();
+        if (otc_backlog_expiration_interval_in_ms != Config.otc_backlog_expiration_interval_ms_default)
+            logger.info("OutboundTcpConnection backlog expiration interval set to to {}ms", otc_backlog_expiration_interval_in_ms);
     }
 
     private static final MessageOut<?> CLOSE_SENTINEL = new MessageOut(MessagingService.Verb.INTERNAL_RESPONSE);
@@ -132,7 +137,7 @@ public class OutboundTcpConnection extends FastThreadLocalThread
     private final BlockingQueue<QueuedMessage> backlog = new LinkedBlockingQueue<>();
     @VisibleForTesting
     static final int BACKLOG_PURGE_SIZE = 1024;
-    private static final long BACKLOG_EXPIRATION_INTERVAL_NANOS = 10 * 1000 * 1000 * 1000; // 10s
+    private final AtomicBoolean backlogExpirationActive = new AtomicBoolean(false);
     private final AtomicLong backlogNextExpirationTime = new AtomicLong(System.nanoTime());
 
     private final OutboundTcpConnectionPool poolReference;
@@ -182,13 +187,13 @@ public class OutboundTcpConnection extends FastThreadLocalThread
         }
     }
 
-    @VisibleForTesting // (otherwise = VisibleForTesting.NONE)
     /**
      * This is a helper method for unit testing. Disclaimer: Do not use this method outside unit tests, as
      * this method is iterating the queue which can be an expensive operation (CPU time, queue locking).
      * 
      * @return true, if the queue contains at least one expired element
      */
+    @VisibleForTesting // (otherwise = VisibleForTesting.NONE)
     boolean backlogContainsExpiredMessages(long nowNanos)
     {
         return backlog.stream().anyMatch(entry -> entry.isTimedOut(nowNanos));
@@ -601,24 +606,34 @@ public class OutboundTcpConnection extends FastThreadLocalThread
          * Expiration is an expensive process. Iterating the queue locks the queue for both writes and
          * reads during iter.next() and iter.remove(). Thus letting only a single Thread do expiration.
          */
-        if (backlogNextExpirationTime.compareAndSet(nextExpirationTime, timestampNanos + BACKLOG_EXPIRATION_INTERVAL_NANOS))
+        if (backlogExpirationActive.compareAndSet(false, true))
         {
-            Iterator<QueuedMessage> iter = backlog.iterator();
-            while (iter.hasNext())
+            try
             {
-                QueuedMessage qm = iter.next();
-                if (!qm.droppable)
-                    continue;
-                if (!qm.isTimedOut(timestampNanos))
-                    continue;
-                iter.remove();
-                dropped.incrementAndGet();
+                Iterator<QueuedMessage> iter = backlog.iterator();
+                while (iter.hasNext())
+                {
+                    QueuedMessage qm = iter.next();
+                    if (!qm.droppable)
+                        continue;
+                    if (!qm.isTimedOut(timestampNanos))
+                        continue;
+                    iter.remove();
+                    dropped.incrementAndGet();
+                }
+                
+                if (logger.isTraceEnabled())
+                {
+                    long duration = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - timestampNanos);
+                    logger.trace("Expiration of {} took {}μs", getName(), duration);
+                }
             }
-            
-            if (logger.isTraceEnabled())
+            finally
             {
-                long duration = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - timestampNanos);
-                logger.trace("Expiration of {} took {}μs", getName(), duration);
+                backlogExpirationActive.set(false);
+                long backlogExplirationIntervalNanos = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getOtcBacklogExpirationInterval());
+                backlogNextExpirationTime.set(timestampNanos + backlogExplirationIntervalNanos);
+
             }
         }
     }
