@@ -2272,6 +2272,18 @@ public class DatabaseDescriptor
         conf.otc_coalescing_enough_coalesced_messages = otc_coalescing_enough_coalesced_messages;
     }
 
+    public static Integer getOtcBacklogExpirationInterval()
+    {
+        Integer confValue = conf.otc_backlog_expiration_interval_ms;
+        return confValue != null ? confValue : Config.otc_backlog_expiration_interval_ms_default;
+    }
+
+    public static void setOtcBacklogExpirationInterval(Integer intervalInMillis)
+    {
+        conf.otc_backlog_expiration_interval_ms = intervalInMillis;
+        
+    }
+    
     public static int getWindowsTimerInterval()
     {
         return conf.windows_timer_interval;
