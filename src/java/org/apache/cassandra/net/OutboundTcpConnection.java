@@ -138,7 +138,7 @@ public class OutboundTcpConnection extends FastThreadLocalThread
     @VisibleForTesting
     static final int BACKLOG_PURGE_SIZE = 1024;
     private final AtomicBoolean backlogExpirationActive = new AtomicBoolean(false);
-    private final AtomicLong backlogNextExpirationTime = new AtomicLong(System.nanoTime());
+    private volatile long backlogNextExpirationTime;
 
     private final OutboundTcpConnectionPool poolReference;
 
@@ -598,8 +598,7 @@ public class OutboundTcpConnection extends FastThreadLocalThread
         if (backlog.size() <= BACKLOG_PURGE_SIZE)
             return; // Plenty of space
 
-        long nextExpirationTime = backlogNextExpirationTime.get();
-        if (nextExpirationTime - timestampNanos > 0)
+        if (backlogNextExpirationTime - timestampNanos > 0)
             return; // Expiration is not due.
 
         /**
@@ -631,8 +630,8 @@ public class OutboundTcpConnection extends FastThreadLocalThread
             finally
             {
                 backlogExpirationActive.set(false);
-                long backlogExplirationIntervalNanos = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getOtcBacklogExpirationInterval());
-                backlogNextExpirationTime.set(timestampNanos + backlogExplirationIntervalNanos);
+                long backlogExpirationIntervalNanos = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getOtcBacklogExpirationInterval());
+                backlogNextExpirationTime = timestampNanos + backlogExpirationIntervalNanos;
 
             }
         }
