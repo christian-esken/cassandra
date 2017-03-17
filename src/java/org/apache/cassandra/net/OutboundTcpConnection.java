@@ -619,7 +619,7 @@ public class OutboundTcpConnection extends FastThreadLocalThread
                     iter.remove();
                     dropped.incrementAndGet();
                 }
-                
+
                 if (logger.isTraceEnabled())
                 {
                     long duration = TimeUnit.NANOSECONDS.toMicros(System.nanoTime() - timestampNanos);
