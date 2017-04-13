@@ -40,7 +40,7 @@ public class OutboundTcpConnectionTest
     final static Verb VERB_DROPPABLE = Verb.MUTATION; // Droppable, 2s timeout
     final static Verb VERB_NONDROPPABLE = Verb.GOSSIP_DIGEST_ACK; // Not droppable
 
-    final static long NANOS_FOR_TIMEOUT = TimeUnit.MILLISECONDS.toNanos(DatabaseDescriptor.getTimeout(VERB_DROPPABLE)*2);
+    final static long NANOS_FOR_TIMEOUT = TimeUnit.MILLISECONDS.toNanos(VERB_DROPPABLE.getTimeout()*2);
 
     
     /**
@@ -163,8 +163,8 @@ public class OutboundTcpConnectionTest
     private OutboundTcpConnection getOutboundTcpConnectionForLocalhost() throws UnknownHostException
     {
         InetAddress lo = InetAddress.getByName("127.0.0.1");
-        OutboundTcpConnectionPool otcPool = new OutboundTcpConnectionPool(lo);
-        OutboundTcpConnection otc = new OutboundTcpConnection(otcPool);
+        OutboundTcpConnectionPool otcPool = new OutboundTcpConnectionPool(lo, null);
+        OutboundTcpConnection otc = new OutboundTcpConnection(otcPool, "lo-OutboundTcpConnectionTest");
         return otc;
     }
 }
