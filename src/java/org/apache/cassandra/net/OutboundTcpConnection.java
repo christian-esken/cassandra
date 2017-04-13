@@ -187,7 +187,12 @@ public class OutboundTcpConnection extends Thread
     @VisibleForTesting // (otherwise = VisibleForTesting.NONE)
     boolean backlogContainsExpiredMessages(long nowNanos)
     {
-        return backlog.stream().anyMatch(entry -> entry.isTimedOut(nowNanos));
+        for (QueuedMessage entry :backlog)
+        {
+             if (entry.isTimedOut(nowNanos))
+                 return true;
+        }
+        return false;
     }
 
     void closeSocket(boolean destroyThread)
